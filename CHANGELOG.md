@@ -19,6 +19,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Cut tool** — draw a line from a point on one edge to a point on another edge
+  of the same face to split it in two. Click to place each point; the preview line
+  turns red when the cut would be rejected. Points snap to corners, `Ctrl` snaps to
+  quarter steps along the edge, `Esc` drops the anchor and then leaves the tool.
+  Mid-edge cut points are inserted into neighbouring faces too, so the surface stays
+  watertight. Panel button in the Edge drawer or the `K` shortcut; one undo step per cut
+
+### Fixed
+- **Edge extrude created inverted normals** — the new quad walked its shared edge in the
+  same direction as the face it grew from, which is the winding rule for two faces that
+  disagree about which side is outward. It now walks it in the opposite direction, so the
+  extruded face keeps the source face's orientation
+- **`Delete` in a sub-element mode also opened the editor's "Delete Node(s)" prompt** —
+  returning `AFTER_GUI_INPUT_STOP` from `_forward_3d_gui_input` stops further viewport
+  handling but never accepts the event, so it went on to the Scene dock shortcut. `Delete`
+  is now claimed in the global `_input` handler while the 3D viewport holds focus
+
 ---
 
 ## [0.10.0] — 2026-08-15

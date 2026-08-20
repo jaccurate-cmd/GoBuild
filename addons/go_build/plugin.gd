@@ -49,6 +49,10 @@ const _SHAPE_DRAW_CTRL_SCRIPT := preload(
 		"res://addons/go_build/core/go_build_shape_draw_controller.gd")
 const _SHAPE_DRAW_OVERLAY_SCRIPT := preload(
 		"res://addons/go_build/core/go_build_shape_draw_overlay.gd")
+const _CUT_CTRL_SCRIPT := preload(
+		"res://addons/go_build/core/go_build_cut_controller.gd")
+const _CUT_OVERLAY_SCRIPT := preload(
+		"res://addons/go_build/core/go_build_cut_overlay.gd")
 const _DROP_CONVERTER_SCRIPT := preload(
 		"res://addons/go_build/core/go_build_material_drop_converter.gd")
 const _EXPORT_INSPECTOR_SCRIPT := preload(
@@ -98,6 +102,7 @@ var _export_inspector: GoBuildExportInspectorPlugin = null
 var _input_controller: SelectionInputController  = null
 var _drag_controller: GoBuildDragController       = null
 var _shape_draw_controller: GoBuildShapeDrawController = null
+var _cut_controller: GoBuildCutController = null
 var _draw_overlay: Control = null
 ## True while a Godot drag-and-drop is in progress over the viewport.
 ## Used to detect the end of a drag so we can apply the cached material.
@@ -203,6 +208,7 @@ func _enter_tree() -> void:
 	_drag_controller = _DRAG_CTRL_SCRIPT.new()
 	_drag_controller.setup(self)
 	_shape_draw_controller = _SHAPE_DRAW_CTRL_SCRIPT.new()
+	_cut_controller = _CUT_CTRL_SCRIPT.new()
 	_input_controller.setup(_gizmo_plugin, _panel, self, _drag_controller)
 
 	_build_toolbar()
@@ -807,6 +813,9 @@ func _handles(object: Object) -> bool:
 
 
 func _edit(object: Object) -> void:
+	# The cut tool is bound to one node's edge indices; those mean nothing on
+	# the next node, so it never survives a selection change.
+	cancel_cut_tool()
 	# Capture the current edit mode so we can carry it to the new node.
 	var carry_mode: int = SelectionManager.Mode.OBJECT
 	if _edited_node != null and is_instance_valid(_edited_node):
@@ -880,6 +889,7 @@ func _force_gizmo_redraw_deferred(node: Node3D) -> void:
 
 func _make_visible(visible: bool) -> void:
 	if not visible:
+		cancel_cut_tool()
 		if _input_controller != null and _edited_node != null:
 			_input_controller.clear_hover(_edited_node)
 		if _edited_node != null:
@@ -921,9 +931,25 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	var key_result: int = _handle_keyboard(event)
 	if key_result != 0:
 		return key_result
+	if _cut_controller != null and _cut_controller.is_active():
+		return _handle_cut_input(camera, event)
 	if _input_controller == null:
 		return 0
 	return _input_controller.process_input(_edited_node, camera, event)
+
+
+## Route viewport input to the cut tool while it is armed.
+##
+## Everything the selection controller would have acted on is withheld from
+## it, so clicking to place a cut point never changes the selection.  Events
+## the tool does not claim still return 0 so the editor keeps handling camera
+## navigation — orbiting mid-cut has to keep working.
+func _handle_cut_input(camera: Camera3D, event: InputEvent) -> int:
+	var result: int = _cut_controller.handle_input(camera, event)
+	# Cheap, and it covers the events the tool reacts to without claiming —
+	# a Ctrl press re-snaps the preview but is deliberately passed through.
+	update_overlays()
+	return result
 
 
 ## Draw the box-select rect, param-preview indicator, and mode / modifier hint label.
@@ -947,7 +973,18 @@ func _forward_3d_draw_over_viewport(overlay: Control) -> void:
 		_draw_mode_hint(overlay)
 	_draw_selection_dims(overlay)
 	_draw_shape_draw_overlay(overlay)
+	_draw_cut_overlay(overlay)
 	_draw_brush_cursor_overlay(overlay)
+
+
+func _draw_cut_overlay(overlay: Control) -> void:
+	if _cut_controller == null or not _cut_controller.is_active():
+		return
+	# Shape draw owns the viewport and the same bottom-left hint slot when it is
+	# running, and it already takes input priority, so stay out of its way.
+	if _shape_draw_controller != null and _shape_draw_controller.is_active():
+		return
+	CutOverlay.draw(overlay, _cut_controller.overlay_data())
 
 
 func _draw_shape_draw_overlay(overlay: Control) -> void:
@@ -1165,6 +1202,7 @@ func _handle_action_key(keycode: Key) -> int:
 		KEY_E:             return _set_transform_mode(GoBuildGizmoPlugin.TransformMode.ROTATE)
 		KEY_R:             return _set_transform_mode(GoBuildGizmoPlugin.TransformMode.SCALE)
 		KEY_V:             return _handle_rip_key()
+		KEY_K:             return _handle_cut_key()
 		KEY_N:             return _handle_normal_vis_key()
 	# Element-mode action keys — handled by helpers to keep return count low.
 	var result: int = _handle_element_action_key(keycode)
@@ -1215,6 +1253,19 @@ func _handle_rip_key() -> int:
 		_panel.trigger_rip()
 		return 1
 	return 0
+
+
+## Intercept K; toggles the interactive cut tool.  Pressing it while the tool
+## is armed leaves the tool, which makes the key a round trip rather than a
+## one-way door.
+func _handle_cut_key() -> int:
+	if _cut_controller == null or _edited_node == null or _panel == null:
+		return 0
+	if _cut_controller.is_active():
+		cancel_cut_tool()
+		return 1
+	_panel.trigger_cut()
+	return 1
 
 
 ## Intercept N; toggles face normal visualiser on/off.
@@ -1494,6 +1545,37 @@ func _refresh_panel_context() -> void:
 	_panel.update_context(_build_panel_context())
 
 
+## Arm the interactive cut tool on the edited node.
+##
+## [param commit_fn] is called as
+## [code]commit_fn(face_index, edge_a, t_a, edge_b, t_b)[/code] for each
+## confirmed cut; [GoBuildEdgeDrawer] supplies one that wraps
+## [CutOperation] in an undoable action.
+func begin_cut_tool(commit_fn: Callable) -> void:
+	if _cut_controller == null or _edited_node == null:
+		return
+	# The two modal tools both own the viewport; arming one leaves the other.
+	if _shape_draw_controller != null and _shape_draw_controller.is_active():
+		_shape_draw_controller.cancel()
+		_hide_draw_param_strip()
+	if _input_controller != null:
+		_input_controller.cancel_drag(_edited_node)
+		_input_controller.clear_hover(_edited_node)
+	# The tool picks edges, so the user has to be able to see them.
+	if _edited_node.selection.get_mode() == SelectionManager.Mode.OBJECT:
+		switch_mode(SelectionManager.Mode.EDGE)
+	_cut_controller.start(_edited_node, commit_fn)
+	update_overlays()
+
+
+## Disarm the cut tool if it is running.  Safe to call unconditionally.
+func cancel_cut_tool() -> void:
+	if _cut_controller == null or not _cut_controller.is_active():
+		return
+	_cut_controller.cancel()
+	update_overlays()
+
+
 ## Enter parameter-preview mode for the given operation.
 ## Called from [GoBuildPanel] via [code]_plugin.call("begin_param_preview", preview)[/code].
 ## Takes a mesh snapshot, optionally scales sensitivity by gizmo scale, creates
@@ -1550,6 +1632,10 @@ func _on_selection_changed() -> void:
 
 
 func _on_mesh_changed() -> void:
+	# Edge indices are renumbered by every topology change, so a pending cut
+	# anchor is meaningless afterwards — including after an undo mid-cut.
+	if _cut_controller != null:
+		_cut_controller.reset_anchor()
 	update_overlays()
 
 

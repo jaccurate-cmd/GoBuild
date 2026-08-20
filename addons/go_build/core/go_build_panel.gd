@@ -303,6 +303,9 @@ func trigger_bridge() -> void:
 func trigger_loop_cut() -> void:
 	if _edge_drawer != null: _edge_drawer.trigger_loop_cut()
 
+func trigger_cut() -> void:
+	if _edge_drawer != null: _edge_drawer.trigger_cut()
+
 func trigger_hard_edge() -> void:
 	if _edge_drawer != null: _edge_drawer.trigger_hard_edge()
 

@@ -143,6 +143,7 @@ static func _get_sections() -> Array[Dictionary]:
 			{key = "Shift + Scale (Face)", desc = "Inset face"},
 			{key = "F", desc = "Bridge / Fill edges"},
 			{key = "V", desc = "Rip vertices / edges"},
+			{key = "K", desc = "Cut tool (edge to edge)"},
 			{key = "N", desc = "Toggle face normals"},
 			{key = "M", desc = "Merge vertices"},
 			{key = "Delete / X", desc = "Delete elements"},

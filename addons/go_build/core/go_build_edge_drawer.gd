@@ -1,6 +1,6 @@
 ## Edge-mode operations drawer for the GoBuild editor panel.
 ##
-## Hosts Extrude, Bevel, Bridge/Fill, Loop Cut, Hard, Soft, and Rip buttons.
+## Hosts Extrude, Bevel, Bridge/Fill, Loop Cut, Cut, Hard, Soft, and Rip buttons.
 ##
 ## Drop into any [VBoxContainer] with [method Node.add_child].  After adding:
 ##   - Call [method GoBuildDrawer.set_plugin] once.
@@ -26,6 +26,8 @@ const _BRIDGE_SCRIPT_E        := \
 		preload("res://addons/go_build/mesh/operations/bridge_operation.gd")
 const _LOOP_CUT_SCRIPT_E      := \
 		preload("res://addons/go_build/mesh/operations/loop_cut_operation.gd")
+const _CUT_SCRIPT_E           := \
+		preload("res://addons/go_build/mesh/operations/cut_operation.gd")
 const _HARD_EDGE_SCRIPT_E     := \
 		preload("res://addons/go_build/mesh/operations/hard_edge_operation.gd")
 const _RIP_SCRIPT_E            := \
@@ -41,6 +43,7 @@ var _extrude_edge_btn: Button = null
 var _bevel_btn:        Button = null
 var _bridge_btn:       Button = null
 var _loop_cut_btn:     Button = null
+var _cut_btn:          Button = null
 var _hard_edge_btn:    Button = null
 var _soft_edge_btn:    Button = null
 var _rip_btn:          Button = null
@@ -82,6 +85,14 @@ func _ready() -> void:
 	_loop_cut_btn.pressed.connect(_on_loop_cut_pressed)
 	grid.add_child(_loop_cut_btn)
 	_register_op(_loop_cut_btn, _cond_edge_any)
+
+	_cut_btn = _op_button("Cut",
+		"Draw a cut line from a point on one edge to a point on another edge\n"
+		+ "of the same face, splitting it in two (K). Click to place each point;\n"
+		+ "Ctrl snaps the point to quarter steps, Esc leaves the tool.")
+	_cut_btn.pressed.connect(_on_cut_pressed)
+	grid.add_child(_cut_btn)
+	_register_op(_cut_btn, _cond_has_mesh)
 
 	_hard_edge_btn = _op_button("Hard",
 		"Mark selected edge(s) as hard: adjacent faces will not average normals\n"
@@ -138,6 +149,11 @@ func trigger_loop_cut() -> void:
 	_on_loop_cut_pressed()
 
 
+## Equivalent to pressing the Cut button — arms the interactive cut tool.
+func trigger_cut() -> void:
+	_on_cut_pressed()
+
+
 ## Equivalent to pressing the Hard Edge button.
 func trigger_hard_edge() -> void:
 	_on_hard_edge_pressed()
@@ -166,6 +182,14 @@ func _cond_edge_any() -> bool:
 	return _target != null \
 			and _target.selection.get_mode() == SelectionManager.Mode.EDGE \
 			and not _target.selection.get_selected_edges().is_empty()
+
+
+## The cut tool is modal and picks its own edges as the user draws, so it only
+## needs a mesh to work on — unlike every other edge operation it does not read
+## the selection.
+func _cond_has_mesh() -> bool:
+	return _target != null and _target.go_build_mesh != null \
+			and not _target.go_build_mesh.faces.is_empty()
 
 
 func _cond_edge_bridge() -> bool:
@@ -304,6 +328,31 @@ func _on_loop_cut_pressed() -> void:
 	preview.apply_fn         = func(p: float) -> void: \
 			LoopCutOperation.apply(_target.go_build_mesh, edges_to_cut, p)
 	_plugin.call("begin_param_preview", preview)
+
+
+## Arm the interactive cut tool.  Each confirmed cut comes back through this
+## commit callback as its own undoable action, so a run of cuts undoes one at a
+## time instead of collapsing into a single step.
+func _on_cut_pressed() -> void:
+	if _target == null or _plugin == null:
+		return
+	if _target.go_build_mesh == null:
+		return
+	var node: GoBuildMeshInstance = _target
+	var commit := func(
+			face_index: int,
+			edge_a: int,
+			t_a: float,
+			edge_b: int,
+			t_b: float,
+	) -> void:
+		if node == null or not is_instance_valid(node) or node != _target:
+			return
+		var op := func() -> void:
+			CutOperation.apply(
+					node.go_build_mesh, face_index, edge_a, t_a, edge_b, t_b)
+		_run_op("Cut Face", op, false)
+	_plugin.call("begin_cut_tool", commit)
 
 
 func _on_hard_edge_pressed() -> void:
