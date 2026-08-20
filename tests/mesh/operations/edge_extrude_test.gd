@@ -5,8 +5,9 @@
 ## empty/invalid selection, non-boundary skip).
 ##
 ## Test mesh conventions:
-##   _make_plus_y_quad() — single CCW-from-above quad in XZ plane, normal +Y,
-##     all 4 edges are boundary.
+##   _make_plus_y_quad() — single quad in the XZ plane, all 4 edges boundary.
+##     Its Newell normal is -Y (the name predates the winding being pinned down);
+##     what matters is that every test compares against the face's own normal.
 ##   _make_two_quads() — two adjacent quads sharing an interior edge; the
 ##     shared edge should be skipped by edge extrude.
 extends GdUnitTestSuite
@@ -24,8 +25,8 @@ const _EDGE_EXTRUDE_SCRIPT := \
 # Helpers
 # ---------------------------------------------------------------------------
 
-## Single quad in the XZ plane (normal = +Y).
-## Vertices: v0=(0,0,0) v1=(1,0,0) v2=(1,0,1) v3=(0,0,1) — CCW from +Y.
+## Single quad in the XZ plane (Newell normal = -Y).
+## Vertices: v0=(0,0,0) v1=(1,0,0) v2=(1,0,1) v3=(0,0,1).
 ## All 4 edges are boundary edges after rebuild_edges().
 func _make_plus_y_quad() -> GoBuildMesh:
 	var mesh := GoBuildMesh.new()
@@ -178,6 +179,55 @@ func test_new_face_normal_perpendicular_to_original_face_after_drag() -> void:
 	assert_float(absf(n.y)).is_less(0.01)
 	# Normal should be unit length.
 	assert_float(n.length()).is_equal_approx(1.0, 0.001)
+
+
+func test_extruded_face_normal_matches_source_face_when_coplanar() -> void:
+	# Pulling the new edge outward within the source face's own plane extends
+	# the surface flat, so the two faces must end up with identical normals.
+	# Walking the shared edge in the same direction as the source face instead
+	# of the opposite one flips the new face — the regression this guards.
+	for ei: int in 4:
+		var mesh := _make_plus_y_quad()
+		var source_normal: Vector3 = mesh.compute_face_normal(mesh.faces[0])
+		var indices: Array[int] = [ei]
+		EdgeExtrudeOperation.apply(mesh, indices)
+
+		# Push the two new verts away from the quad centre, staying in the plane.
+		var new_face: GoBuildFace = mesh.faces[1]
+		var centre := Vector3(0.5, 0.0, 0.5)
+		for slot: int in [2, 3]:
+			var vi: int = new_face.vertex_indices[slot]
+			mesh.vertices[vi] = mesh.vertices[vi] + (mesh.vertices[vi] - centre)
+
+		var new_normal: Vector3 = mesh.compute_face_normal(new_face)
+		assert_float(new_normal.dot(source_normal)).is_greater(0.99)
+
+
+func test_extruded_face_walks_shared_edge_opposite_to_source_face() -> void:
+	# Consistent orientation means neighbouring faces traverse their shared
+	# edge in opposite directions.  Assert that directly on the topology so the
+	# check holds regardless of where the user drags the new edge.
+	for ei: int in 4:
+		var mesh := _make_plus_y_quad()
+		var edge: GoBuildEdge = mesh.edges[ei]
+		var va: int = edge.vertex_a
+		var vb: int = edge.vertex_b
+		var indices: Array[int] = [ei]
+		EdgeExtrudeOperation.apply(mesh, indices)
+
+		var source: Array = mesh.faces[0].vertex_indices
+		var new_face: Array = mesh.faces[1].vertex_indices
+		assert_bool(_walks(source, va, vb)).is_true()
+		assert_bool(_walks(new_face, vb, va)).is_true()
+
+
+## Returns true if [param loop] steps straight from [param va] to [param vb].
+func _walks(loop: Array, va: int, vb: int) -> bool:
+	var vc: int = loop.size()
+	for i: int in vc:
+		if loop[i] == va and loop[(i + 1) % vc] == vb:
+			return true
+	return false
 
 
 # ---------------------------------------------------------------------------

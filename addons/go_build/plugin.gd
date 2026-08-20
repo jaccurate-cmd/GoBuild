@@ -540,6 +540,12 @@ func _notification(what: int) -> void:
 ## here because Godot's built-in viewport shortcuts (1-6 for orthographic views)
 ## consume these keys before [method _forward_3d_gui_input] is called.  The global
 ## _input callback runs first, letting us intercept and mark them handled.
+##
+## Delete is handled here for the mirror-image reason: returning
+## AFTER_GUI_INPUT_STOP from [method _forward_3d_gui_input] stops further viewport
+## handling but never accepts the event, so it goes on to the Scene dock's
+## "Delete Node(s)" shortcut and the whole GoBuildMeshInstance gets a delete
+## confirmation.  Claiming it in _input is the only way to stop that.
 func _input(event: InputEvent) -> void:
 	# Track mouse position in SubViewport-local coords during drags for raycasting.
 	if event is InputEventMouseMotion:
@@ -651,7 +657,7 @@ func _input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key.echo or not key.pressed:
 		return
-	if _handle_mode_switch_in_global(key):
+	if _handle_global_key(key):
 		get_viewport().set_input_as_handled()
 
 
@@ -667,6 +673,48 @@ func _is_event_in_viewport(event: InputEvent, vp: SubViewport) -> bool:
 		return false
 	var vp_rect: Rect2 = vp_parent.get_global_rect()
 	return vp_rect.has_point(mouse_event.global_position)
+
+
+## Dispatch the key shortcuts that have to be claimed in the global _input
+## callback, before the editor's own shortcuts get a chance at them.
+## Returns [code]true[/code] if the event was consumed.
+func _handle_global_key(key: InputEventKey) -> bool:
+	if _handle_delete_in_global(key):
+		return true
+	return _handle_mode_switch_in_global(key)
+
+
+## Handle the Delete shortcut in the global _input callback so it never reaches
+## the Scene dock's "Delete Node(s)" shortcut while a sub-element selection is
+## being edited.  Only claims the key while the 3D viewport holds keyboard
+## focus, so deleting nodes or files from the docks still works.
+## Returns [code]true[/code] if the event was consumed.
+func _handle_delete_in_global(key: InputEventKey) -> bool:
+	if key.keycode != KEY_DELETE:
+		return false
+	if not _viewport_3d_has_focus():
+		return false
+	return _handle_delete_key() != 0
+
+
+## Return [code]true[/code] if keyboard focus currently sits inside one of the
+## 3D editor viewports (its input surface is a sibling of the SubViewport's
+## container, so the shared Node3DEditorViewport parent is what we test).
+func _viewport_3d_has_focus() -> bool:
+	var focus: Control = get_viewport().gui_get_focus_owner()
+	if focus == null:
+		return false
+	for i: int in 4:
+		var vp: SubViewport = EditorInterface.get_editor_viewport_3d(i)
+		if vp == null:
+			continue
+		var container: Node = vp.get_parent()
+		if container == null:
+			continue
+		var editor_viewport: Node = container.get_parent()
+		if editor_viewport != null and editor_viewport.is_ancestor_of(focus):
+			return true
+	return false
 
 
 ## Handle mode-switch shortcuts (1-4) and grow/shrink (Ctrl+=/Ctrl+-) in the

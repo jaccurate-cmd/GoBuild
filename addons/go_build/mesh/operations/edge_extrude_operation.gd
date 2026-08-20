@@ -13,9 +13,9 @@
 ## edge creates a T-junction (the original edge gains a third adjacent face)
 ## which matches Blender's "Extrude Edges and Move" behaviour for interior edges.
 ##
-## Winding convention is identical to [ExtrudeOperation] side faces:
-## [code][va, vb, nb, na][/code] wound CCW from outside, so
-## [method GoBuildMesh.compute_face_normal] returns the correct outward normal.
+## The new face walks the shared edge in the opposite direction to the adjacent
+## face, which is the condition for two neighbouring faces to be consistently
+## oriented -- so the extruded quad keeps the source face's outward side.
 ##
 ## [method GoBuildMesh.rebuild_edges] is called automatically inside
 ## [method apply]. The method returns the indices of all newly created edges
@@ -98,31 +98,42 @@ static func apply(
 ## Extrude a single boundary edge, appending a new face and the na/nb pair.
 ##
 ## Algorithm:
-##   1. Duplicate each endpoint: [code]na[/code] at [code]va[/code]'s position,
+##   1. Orient [code]va[/code]→[code]vb[/code] the way the adjacent face walks
+##      the shared edge.  The edge's own direction comes from whichever face
+##      registered it first, so it is not reliable on its own.
+##   2. Duplicate each endpoint: [code]na[/code] at [code]va[/code]'s position,
 ##      [code]nb[/code] at [code]vb[/code]'s position.
-##   2. Add a new quad face [code][va, vb, nb, na][/code] — CCW from outside,
-##      matching the side-face winding of [ExtrudeOperation].
-##   3. Append [code][na, nb][/code] to [param new_vert_pairs] for post-
+##   3. Add a new quad face [code][vb, va, na, nb][/code] — the shared edge is
+##      walked backwards relative to the adjacent face.
+##   4. Append [code][na, nb][/code] to [param new_vert_pairs] for post-
 ##      rebuild index lookup.
-##   4. Offset [code]na[/code] and [code]nb[/code] by [param offset] if non-zero.
+##   5. Offset [code]na[/code] and [code]nb[/code] by [param offset] if non-zero.
 static func _extrude_single_edge(
 		mesh: GoBuildMesh,
 		edge: GoBuildEdge,
 		new_vert_pairs: Array,
 		offset: Vector3 = Vector3.ZERO,
 ) -> void:
+	# ── 1. Match the adjacent face's traversal direction ───────────────────
 	var va: int = edge.vertex_a
 	var vb: int = edge.vertex_b
+	if not edge.face_indices.is_empty():
+		var adjacent: GoBuildFace = mesh.faces[edge.face_indices[0]]
+		if not _face_walks(adjacent, va, vb):
+			var swap: int = va
+			va = vb
+			vb = swap
 
-	# ── 1. Duplicate the two endpoints ─────────────────────────────────────
+	# ── 2. Duplicate the two endpoints ─────────────────────────────────────
 	var na: int = mesh.append_vertex_from(va, mesh.vertices[va] + offset)
 	var nb: int = mesh.append_vertex_from(vb, mesh.vertices[vb] + offset)
 
-	# ── 2. Add the new quad face ────────────────────────────────────────────
-	# Winding [va, vb, nb, na] is CCW from outside — identical to the side-face
-	# convention in ExtrudeOperation so outward normals are consistent.
+	# ── 3. Add the new quad face ────────────────────────────────────────────
+	# The adjacent face walks va→vb, so the new face walks vb→va.  Faces that
+	# share an edge in opposite directions agree on which side is outward, so
+	# the extruded quad inherits the source face's normal orientation.
 	var face := GoBuildFace.new()
-	face.vertex_indices = [va, vb, nb, na]
+	face.vertex_indices = [vb, va, na, nb]
 	# Simple planar UV: bottom-left → bottom-right → top-right → top-left.
 	face.uvs = [Vector2(0.0, 0.0), Vector2(1.0, 0.0), Vector2(1.0, 1.0), Vector2(0.0, 1.0)]
 	# Inherit material from the adjacent face so the new face blends in.
@@ -130,5 +141,15 @@ static func _extrude_single_edge(
 		face.material_index = mesh.faces[edge.face_indices[0]].material_index
 	mesh.faces.append(face)
 
-	# ── 3. Record the new-vert pair for post-rebuild lookup ─────────────────
+	# ── 4. Record the new-vert pair for post-rebuild lookup ─────────────────
 	new_vert_pairs.append([na, nb])
+
+
+## Returns [code]true[/code] if [param face] walks its vertex loop straight from
+## [param va] to [param vb].
+static func _face_walks(face: GoBuildFace, va: int, vb: int) -> bool:
+	var vc: int = face.vertex_indices.size()
+	for i: int in vc:
+		if face.vertex_indices[i] == va and face.vertex_indices[(i + 1) % vc] == vb:
+			return true
+	return false
